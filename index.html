@@ -4,72 +4,117 @@
   <meta charset="utf-8" />
   <title>WebRTC Game Receiver</title>
   <style>
-    html,body { height:100%; margin:0; background:black; }
-    #stream { width:100%; height:100%; object-fit:contain; background:black; }
-    #status { position: absolute; top: 8px; left:8px; color:#0f0; font-family:monospace; }
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: black;
+    }
+    #stream {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: black;
+    }
+    #status {
+      position: absolute;
+      top: 8px;
+      left: 8px;
+      color: #0f0;
+      font-family: monospace;
+    }
   </style>
 </head>
 <body>
   <div id="status">connecting...</div>
   <video id="stream" autoplay playsinline muted></video>
 
-<script>
-const SIGNALING_URL = "ws://YOUR_PC_IP:8080"; // <-- change to your signaling server
-const pcConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js"></script>
 
-const videoEl = document.getElementById('stream');
-const statusEl = document.getElementById('status');
-let pc = null;
-let ws = null;
+  <script>
+    /** ---------- CONFIG ---------- **/
+    const pcConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 
-function log(s){ console.log(s); statusEl.textContent = s; }
+    // Replace these with your Firebase project details
+    const firebaseConfig = {
+      apiKey: "YOUR_API_KEY",
+      authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+      databaseURL: "https://YOUR_PROJECT_ID.firebaseio.com",
+      projectId: "YOUR_PROJECT_ID",
+      storageBucket: "YOUR_PROJECT_ID.appspot.com",
+      messagingSenderId: "SENDER_ID",
+      appId: "APP_ID"
+    };
 
-function connectSignaling() {
-  ws = new WebSocket(SIGNALING_URL);
-  ws.onopen = () => log("signaling connected");
-  ws.onerror = (e) => { console.error("ws err", e); log("signaling error"); };
-  ws.onclose = () => log("signaling closed");
-  ws.onmessage = async (evt) => {
-    let msg = null;
-    try { msg = JSON.parse(evt.data); } catch(e) { console.warn("bad msg", e); return; }
-
-    if (msg.type === 'offer') {
-      await handleOffer(msg.sdp);
-    } else if (msg.type === 'ice') {
-      if (pc && msg.candidate) {
-        try { await pc.addIceCandidate(msg.candidate); } catch(e){ console.warn(e); }
-      }
+    /** ---------- UI HANDLES ---------- **/
+    const videoEl = document.getElementById('stream');
+    const statusEl = document.getElementById('status');
+    function log(msg) {
+      console.log(msg);
+      statusEl.textContent = msg;
     }
-  };
-}
 
-async function handleOffer(offerSdp) {
-  log("received offer, creating PeerConnection...");
-  pc = new RTCPeerConnection(pcConfig);
+    /** ---------- INITIALISE FIREBASE ---------- **/
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
 
-  pc.ontrack = (ev) => {
-    log("track received");
-    videoEl.srcObject = ev.streams[0];
-  };
+    /** ---------- WEBRTC ---------- **/
+    let pc = null;
 
-  pc.onicecandidate = (e) => {
-    if (e.candidate && ws && ws.readyState === 1) {
-      ws.send(JSON.stringify({ type: 'ice', candidate: e.candidate }));
+    async function handleOffer(offerSdp) {
+      log("Received offer, creating PeerConnection...");
+
+      pc = new RTCPeerConnection(pcConfig);
+
+      pc.ontrack = (event) => {
+        log("Track received");
+        videoEl.srcObject = event.streams[0];
+      };
+
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          db.ref("answerCandidates").push(event.candidate.toJSON());
+        }
+      };
+
+      await pc.setRemoteDescription({ type: "offer", sdp: offerSdp });
+
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      // Send answer back to Firebase
+      db.ref("answer").set({ type: "answer", sdp: answer.sdp });
+      log("Answer sent; waiting for media...");
     }
-  };
 
-  await pc.setRemoteDescription({ type: 'offer', sdp: offerSdp });
+    /** ---------- FIREBASE SIGNALING LISTENERS ---------- **/
+    function startSignaling() {
+      log("Waiting for offer...");
 
-  const answer = await pc.createAnswer();
-  await pc.setLocalDescription(answer);
+      // Listen for offer from sender
+      db.ref("offer").on("value", async (snapshot) => {
+        const data = snapshot.val();
+        if (data && data.type === "offer") {
+          await handleOffer(data.sdp);
+        }
+      });
 
-  // send answer
-  ws.send(JSON.stringify({ type: 'answer', sdp: pc.localDescription.sdp }));
-  log("answer sent; waiting for media...");
-}
+      // Listen for ICE candidates from sender
+      db.ref("offerCandidates").on("child_added", async (snapshot) => {
+        const candidate = snapshot.val();
+        if (candidate && pc) {
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(candidate));
+          } catch (err) {
+            console.warn("Error adding candidate", err);
+          }
+        }
+      });
+    }
 
-// small UI to show latency-ready
-connectSignaling();
-</script>
+    /** ---------- START ---------- **/
+    startSignaling();
+  </script>
 </body>
 </html>

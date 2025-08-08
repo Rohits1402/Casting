@@ -1,0 +1,90 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Game Stream Receiver</title>
+  <style>
+    html,body { margin:0; height:100%; background:black; }
+    video { width:100%; height:100%; object-fit:contain; background:black; }
+  </style>
+</head>
+<body>
+  <video id="stream" autoplay playsinline></video>
+
+  <script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+  <script>
+    const NAMESPACE = 'urn:x-cast:com.example.game.webrtc'; // unique namespace
+    const videoEl = document.getElementById('stream');
+    let pc = null;
+
+    // Cast receiver setup
+    const context = cast.framework.CastReceiverContext.getInstance();
+    const options = new cast.framework.CastReceiverOptions();
+    options.disableIdleTimeout = true;
+    context.start(options);
+
+    // Create message bus for signaling
+    const messageBus = context.getCastMessageBus(NAMESPACE);
+
+    // Helper: send local messages back to sender
+    function sendToSender(msg) {
+      // msg is an object; senderId used to target sender
+      messageBus.broadcast(JSON.stringify(msg));
+    }
+
+    // Build PeerConnection, handle tracks and ICE
+    async function createPeerConnectionAndSetRemote(sdpOffer) {
+      if (pc) {
+        console.warn('Existing PC — closing and creating new one.');
+        pc.close();
+        pc = null;
+      }
+
+      pc = new RTCPeerConnection({
+        iceServers: [{ urls: ["stun:stun.l.google.com:19302"] }]
+      });
+
+      pc.ontrack = (ev) => {
+        // attach first incoming stream to video tag
+        videoEl.srcObject = ev.streams[0];
+      };
+
+      pc.onicecandidate = (e) => {
+        if (e.candidate) {
+          sendToSender({ type: 'ice-candidate', candidate: e.candidate });
+        }
+      };
+
+      await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: sdpOffer }));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      // send answer back to sender
+      sendToSender({ type: 'answer', sdp: pc.localDescription.sdp });
+    }
+
+    // Incoming messages from sender via Cast message bus
+    messageBus.addEventListener(cast.framework.messages.MessageEventType.MESSAGE, (evt) => {
+      try {
+        const data = JSON.parse(evt.data);
+        if (data.type === 'offer') {
+          createPeerConnectionAndSetRemote(data.sdp).catch(console.error);
+        } else if (data.type === 'ice-candidate') {
+          if (!pc) {
+            console.warn('No PC yet; buffering candidate not implemented in this sample.');
+            return;
+          }
+          pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(console.error);
+        }
+      } catch (e) {
+        console.error('Bad message', e);
+      }
+    });
+
+    // keep the receiver alive
+    context.addCustomMessageListener(NAMESPACE, (evt) => {
+      // handled by messageBus above
+    });
+
+  </script>
+</body>
+</html>

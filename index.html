@@ -21,6 +21,13 @@
             color: white;
             font-size: 2em;
             position: absolute;
+            /* Initially visible */
+            display: flex; 
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            height: 100%;
+            background: black;
         }
     </style>
     <script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
@@ -58,7 +65,7 @@
             if (event.streams && event.streams[0] && event.streams[0].getVideoTracks().length > 0) {
                 console.log("Received a video stream.");
                 remoteVideo.srcObject = event.streams[0];
-                statusDiv.style.display = 'none'; // Hide status message on success
+                statusDiv.style.display = 'none'; // Hide status on success
             } else {
                 console.warn("Received a track without a video stream.");
             }
@@ -68,8 +75,6 @@
         async function startWebRtcSignaling() {
             console.log("Receiver starting WebRTC signaling...");
 
-            // **CRITICAL:** Ensure this path matches the one in your Android sender.
-            // The Android code uses "webrtc" as the root and "webrtc_call" as the child.
             const callId = "webrtc_call";
             const dbRoot = db.ref("webrtc").child(callId);
 
@@ -78,11 +83,9 @@
             const senderCandidatesRef = dbRoot.child("offerCandidates");
             const receiverCandidatesRef = dbRoot.child("answerCandidates");
 
-            // Clear previous session data to prevent conflicts
             await dbRoot.remove();
             console.log("Cleared previous session data.");
 
-            // Listen for ICE candidates from the sender and add them
             senderCandidatesRef.on("child_added", snapshot => {
                 const candidate = snapshot.val();
                 if (candidate) {
@@ -91,39 +94,36 @@
                 }
             });
 
-            // Listen for a new offer from the sender
             offerRef.on("value", async snapshot => {
                 const offer = snapshot.val();
                 if (offer) {
                     console.log("Received offer", offer);
                     await pc.setRemoteDescription(new RTCSessionDescription(offer));
 
-                    // Create and set the answer
                     const answer = await pc.createAnswer();
                     await pc.setLocalDescription(answer);
 
-                    // Send the answer back to the sender
                     answerRef.set(pc.localDescription.toJSON());
                 }
             });
 
-            // Send our ICE candidates to the sender
             pc.onicecandidate = event => {
                 if (event.candidate) {
                     receiverCandidatesRef.push(event.candidate.toJSON());
                 }
             };
-
-            // Listen for ICE connection state changes
+            
+            // Listen for ICE connection state changes to update the status message
             pc.oniceconnectionstatechange = () => {
                 const state = pc.iceConnectionState;
                 console.log("ICE connection state changed:", state);
                 if (state === "disconnected" || state === "failed") {
-                    statusDiv.innerText = "Connection failed.";
+                    statusDiv.innerText = "Connection failed. Please try again.";
+                    statusDiv.style.display = 'flex'; // Show status on failure
                     console.error("WebRTC connection failed.");
                 } else if (state === "connected") {
                     statusDiv.innerText = "Connected!";
-                    statusDiv.style.display = 'none'; // Hide on successful connection
+                    // The ontrack event handler will hide the div once the stream starts
                 }
             };
         }
@@ -132,7 +132,6 @@
         const castContext = cast.framework.CastReceiverContext.getInstance();
         castContext.start();
 
-        // Start WebRTC signaling only after the Cast receiver is ready
         castContext.addEventListener(cast.framework.system.EventType.READY, () => {
             console.log("Cast receiver is ready.");
             startWebRtcSignaling();

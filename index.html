@@ -18,16 +18,18 @@ html, body { height: 100%; margin: 0; background: black; }
 
 <script>
 const pcConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
-const firebaseConfig = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-  databaseURL: "https://YOUR_PROJECT_ID.firebaseio.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT_ID.appspot.com",
-  messagingSenderId: "SENDER_ID",
-  appId: "APP_ID"
-};
 
+const firebaseConfig = {
+  apiKey: "AIzaSyCkkRE9ek2jjkUKTEpxYljx0hTWVMsQjNo",
+  authDomain: "webrtc-signalling-24f53.firebaseapp.com",
+  databaseURL: "https://webrtc-signalling-24f53-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "webrtc-signalling-24f53",
+  storageBucket: "webrtc-signalling-24f53.firebasestorage.app",
+  messagingSenderId: "679998066907",
+  appId: "1:679998066907:web:0adb3b30d684518680fcfe",
+  measurementId: "G-3KWQ9JTCST"
+};
+  
 firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
 
@@ -91,3 +93,4 @@ startSignaling();
 </script>
 </body>
 </html>
+

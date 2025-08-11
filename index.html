@@ -1,96 +1,98 @@
-<!doctype html>
+<!DOCTYPE html>
 <html>
 <head>
-<meta charset="utf-8" />
-<title>WebRTC Game Receiver</title>
-<style>
-html, body { height: 100%; margin: 0; background: black; }
-#stream { width: 100%; height: 100%; object-fit: contain; background: black; }
-#status { position: absolute; top: 8px; left: 8px; color: #0f0; font-family: monospace; }
-</style>
+  <meta charset="UTF-8" />
+  <title>Game Cast Receiver</title>
+  <style>
+    body {
+      margin: 0;
+      background: black;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+    }
+    video {
+      max-width: 100%;
+      max-height: 100%;
+      background: black;
+    }
+  </style>
+  <script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 </head>
 <body>
-<div id="status">connecting...</div>
-<video id="stream" autoplay playsinline muted></video>
+  <video id="remoteVideo" autoplay playsinline></video>
 
-<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js"></script>
+  <script>
+    // 1. Firebase config — must match your Android sender's config
+    const firebaseConfig = {
+      apiKey: "AIzaSyCkkRE9ek2jjkUKTEpxYljx0hTWVMsQjNo",
+      authDomain: "webrtc-signalling-24f53.firebaseapp.com",
+      databaseURL: "https://webrtc-signalling-24f53-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "webrtc-signalling-24f53",
+      storageBucket: "webrtc-signalling-24f53.appspot.com",
+      messagingSenderId: "679998066907",
+      appId: "1:679998066907:web:0adb3b30d684518680fcfe",
+      measurementId: "G-3KWQ9JTCST"
+    };
 
-<script>
-const pcConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
 
-const firebaseConfig = {
-  apiKey: "AIzaSyCkkRE9ek2jjkUKTEpxYljx0hTWVMsQjNo",
-  authDomain: "webrtc-signalling-24f53.firebaseapp.com",
-  databaseURL: "https://webrtc-signalling-24f53-default-rtdb.asia-southeast1.firebasedatabase.app",
-  projectId: "webrtc-signalling-24f53",
-  storageBucket: "webrtc-signalling-24f53.firebasestorage.app",
-  messagingSenderId: "679998066907",
-  appId: "1:679998066907:web:0adb3b30d684518680fcfe",
-  measurementId: "G-3KWQ9JTCST"
-};
-  
-firebase.initializeApp(firebaseConfig);
-const db = firebase.database();
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+    });
 
-const videoEl = document.getElementById('stream');
-const statusEl = document.getElementById('status');
-function log(msg) { console.log(msg); statusEl.textContent = msg; }
+    const remoteVideo = document.getElementById("remoteVideo");
+    pc.ontrack = event => {
+      remoteVideo.srcObject = event.streams[0];
+    };
 
-let pc = null;
-let pendingOfferCandidates = [];
+    // 2. Function to start listening for offers from Android sender
+    async function startReceiver() {
+      console.log("Receiver starting...");
 
-async function handleOffer(offer) {
-  log("Received offer, creating PeerConnection...");
-  pc = new RTCPeerConnection(pcConfig);
+      const offerRef = db.ref("offer");
+      const answerRef = db.ref("answer");
+      const candidatesRef = db.ref("candidates/receiver");
 
-  pc.ontrack = (event) => {
-    log("Track received");
-    videoEl.srcObject = event.streams[0];
-    videoEl.play().catch(console.error);
-  };
+      // Clear previous session
+      await offerRef.remove();
+      await answerRef.remove();
+      await candidatesRef.remove();
 
-  pc.onicecandidate = (event) => {
-    if (event.candidate) {
-      db.ref("answerCandidates").push(event.candidate.toJSON());
+      // Listen for ICE candidates from sender
+      db.ref("candidates/sender").on("child_added", snapshot => {
+        const candidate = snapshot.val();
+        console.log("Got ICE candidate from sender", candidate);
+        pc.addIceCandidate(new RTCIceCandidate(candidate));
+      });
+
+      // Send our ICE candidates to sender
+      pc.onicecandidate = event => {
+        if (event.candidate) {
+          candidatesRef.push(event.candidate.toJSON());
+        }
+      };
+
+      // Listen for new offer
+      offerRef.on("value", async snapshot => {
+        const offer = snapshot.val();
+        if (offer) {
+          console.log("Received offer", offer);
+          await pc.setRemoteDescription(new RTCSessionDescription(offer));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          answerRef.set(pc.localDescription.toJSON());
+        }
+      });
     }
-  };
 
-  await pc.setRemoteDescription(offer);
-  const answer = await pc.createAnswer();
-  await pc.setLocalDescription(answer);
-  db.ref("answer").set(answer);
-
-  pendingOfferCandidates.forEach(c =>
-    pc.addIceCandidate(new RTCIceCandidate(c)).catch(console.error)
-  );
-  pendingOfferCandidates = [];
-
-  log("Answer sent; waiting for media...");
-}
-
-function startSignaling() {
-  log("Waiting for offer...");
-  db.ref("offer").on("value", async (snapshot) => {
-    const data = snapshot.val();
-    if (data && data.type === "offer") {
-      await handleOffer(data);
-    }
-  });
-
-  db.ref("offerCandidates").on("child_added", (snapshot) => {
-    const candidate = snapshot.val();
-    if (!candidate) return;
-    if (pc) {
-      pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.error);
-    } else {
-      pendingOfferCandidates.push(candidate);
-    }
-  });
-}
-
-startSignaling();
-</script>
+    // 3. Start CAF Receiver + WebRTC
+    cast.framework.CastReceiverContext.getInstance().start();
+    startReceiver();
+  </script>
 </body>
 </html>
-

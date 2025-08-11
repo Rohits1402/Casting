@@ -1,120 +1,93 @@
 <!doctype html>
 <html>
 <head>
-  <meta charset="utf-8" />
-  <title>WebRTC Game Receiver</title>
-  <style>
-    html, body {
-      height: 100%;
-      margin: 0;
-      background: black;
-    }
-    #stream {
-      width: 100%;
-      height: 100%;
-      object-fit: contain;
-      background: black;
-    }
-    #status {
-      position: absolute;
-      top: 8px;
-      left: 8px;
-      color: #0f0;
-      font-family: monospace;
-    }
-  </style>
+<meta charset="utf-8" />
+<title>WebRTC Game Receiver</title>
+<style>
+html, body { height: 100%; margin: 0; background: black; }
+#stream { width: 100%; height: 100%; object-fit: contain; background: black; }
+#status { position: absolute; top: 8px; left: 8px; color: #0f0; font-family: monospace; }
+</style>
 </head>
 <body>
-  <div id="status">connecting...</div>
-  <video id="stream" autoplay playsinline muted></video>
+<div id="status">connecting...</div>
+<video id="stream" autoplay playsinline muted></video>
 
-  <!-- Firebase SDK -->
-  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js"></script>
 
-  <script>
-    /** ---------- CONFIG ---------- **/
-    const pcConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+<script>
+const pcConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+const firebaseConfig = {
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+  databaseURL: "https://YOUR_PROJECT_ID.firebaseio.com",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_PROJECT_ID.appspot.com",
+  messagingSenderId: "SENDER_ID",
+  appId: "APP_ID"
+};
 
-    // Replace these with your Firebase project details
-    const firebaseConfig = {
-      apiKey: "YOUR_API_KEY",
-      authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-      databaseURL: "https://YOUR_PROJECT_ID.firebaseio.com",
-      projectId: "YOUR_PROJECT_ID",
-      storageBucket: "YOUR_PROJECT_ID.appspot.com",
-      messagingSenderId: "SENDER_ID",
-      appId: "APP_ID"
-    };
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
 
-    /** ---------- UI HANDLES ---------- **/
-    const videoEl = document.getElementById('stream');
-    const statusEl = document.getElementById('status');
-    function log(msg) {
-      console.log(msg);
-      statusEl.textContent = msg;
+const videoEl = document.getElementById('stream');
+const statusEl = document.getElementById('status');
+function log(msg) { console.log(msg); statusEl.textContent = msg; }
+
+let pc = null;
+let pendingOfferCandidates = [];
+
+async function handleOffer(offer) {
+  log("Received offer, creating PeerConnection...");
+  pc = new RTCPeerConnection(pcConfig);
+
+  pc.ontrack = (event) => {
+    log("Track received");
+    videoEl.srcObject = event.streams[0];
+    videoEl.play().catch(console.error);
+  };
+
+  pc.onicecandidate = (event) => {
+    if (event.candidate) {
+      db.ref("answerCandidates").push(event.candidate.toJSON());
     }
+  };
 
-    /** ---------- INITIALISE FIREBASE ---------- **/
-    firebase.initializeApp(firebaseConfig);
-    const db = firebase.database();
+  await pc.setRemoteDescription(offer);
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+  db.ref("answer").set(answer);
 
-    /** ---------- WEBRTC ---------- **/
-    let pc = null;
+  pendingOfferCandidates.forEach(c =>
+    pc.addIceCandidate(new RTCIceCandidate(c)).catch(console.error)
+  );
+  pendingOfferCandidates = [];
 
-    async function handleOffer(offerSdp) {
-      log("Received offer, creating PeerConnection...");
+  log("Answer sent; waiting for media...");
+}
 
-      pc = new RTCPeerConnection(pcConfig);
-
-      pc.ontrack = (event) => {
-        log("Track received");
-        videoEl.srcObject = event.streams[0];
-      };
-
-      pc.onicecandidate = (event) => {
-        if (event.candidate) {
-          db.ref("answerCandidates").push(event.candidate.toJSON());
-        }
-      };
-
-      await pc.setRemoteDescription({ type: "offer", sdp: offerSdp });
-
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-
-      // Send answer back to Firebase
-      db.ref("answer").set({ type: "answer", sdp: answer.sdp });
-      log("Answer sent; waiting for media...");
+function startSignaling() {
+  log("Waiting for offer...");
+  db.ref("offer").on("value", async (snapshot) => {
+    const data = snapshot.val();
+    if (data && data.type === "offer") {
+      await handleOffer(data);
     }
+  });
 
-    /** ---------- FIREBASE SIGNALING LISTENERS ---------- **/
-    function startSignaling() {
-      log("Waiting for offer...");
-
-      // Listen for offer from sender
-      db.ref("offer").on("value", async (snapshot) => {
-        const data = snapshot.val();
-        if (data && data.type === "offer") {
-          await handleOffer(data.sdp);
-        }
-      });
-
-      // Listen for ICE candidates from sender
-      db.ref("offerCandidates").on("child_added", async (snapshot) => {
-        const candidate = snapshot.val();
-        if (candidate && pc) {
-          try {
-            await pc.addIceCandidate(new RTCIceCandidate(candidate));
-          } catch (err) {
-            console.warn("Error adding candidate", err);
-          }
-        }
-      });
+  db.ref("offerCandidates").on("child_added", (snapshot) => {
+    const candidate = snapshot.val();
+    if (!candidate) return;
+    if (pc) {
+      pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.error);
+    } else {
+      pendingOfferCandidates.push(candidate);
     }
+  });
+}
 
-    /** ---------- START ---------- **/
-    startSignaling();
-  </script>
+startSignaling();
+</script>
 </body>
 </html>

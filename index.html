@@ -75,7 +75,7 @@
         async function startWebRtcSignaling() {
             console.log("Receiver starting WebRTC signaling...");
 
-            const callId = "webrtc_call";
+            const callId = "room1";
             const dbRoot = db.ref("webrtc").child(callId);
 
             const offerRef = dbRoot.child("offer");
@@ -139,3 +139,4 @@
     </script>
 </body>
 </html>
+

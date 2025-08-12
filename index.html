@@ -13,8 +13,12 @@
             height: 100vh;
         }
         video {
-            max-width: 100%;
-            max-height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            object-fit: cover; /* Fill TV, crop if needed */
             background: black;
         }
         #status {
@@ -228,3 +232,4 @@
     </script>
 </body>
 </html>
+

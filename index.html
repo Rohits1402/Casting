@@ -21,7 +21,6 @@
             color: white;
             font-size: 2em;
             position: absolute;
-            /* Initially visible */
             display: flex; 
             align-items: center;
             justify-content: center;
@@ -31,112 +30,181 @@
         }
     </style>
     <script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 </head>
 <body>
-    <div id="status">Connecting...</div>
+    <div id="status">Waiting for connection...</div>
     <video id="remoteVideo" autoplay playsinline></video>
 
     <script>
-        // 1. Firebase config
-        const firebaseConfig = {
-            apiKey: "AIzaSyCkkRE9ek2jjkUKTEpxYljx0hTWVMsQjNo",
-            authDomain: "webrtc-signalling-24f53.firebaseapp.com",
-            databaseURL: "https://webrtc-signalling-24f53-default-rtdb.asia-southeast1.firebasedatabase.app",
-            projectId: "webrtc-signalling-24f53",
-            storageBucket: "webrtc-signalling-24f53.appspot.com",
-            messagingSenderId: "679998066907",
-            appId: "1:679998066907:web:0adb3b30d684518680fcfe",
-            measurementId: "G-3KWQ9JTCST"
-        };
-        firebase.initializeApp(firebaseConfig);
-        const db = firebase.database();
-
-        // 2. WebRTC Peer Connection setup
+        // WebRTC Peer Connection setup
         const pc = new RTCPeerConnection({
-            iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+            iceServers: [
+                { urls: "stun:stun.l.google.com:19302" },
+                { urls: "stun:stun1.l.google.com:19302" }
+            ]
         });
 
         const remoteVideo = document.getElementById("remoteVideo");
         const statusDiv = document.getElementById("status");
+        const castContext = cast.framework.CastReceiverContext.getInstance();
 
+        // WebRTC event handlers
         pc.ontrack = event => {
             if (event.streams && event.streams[0] && event.streams[0].getVideoTracks().length > 0) {
-                console.log("Received a video stream.");
+                console.log("Received video stream from Android app");
                 remoteVideo.srcObject = event.streams[0];
-                statusDiv.style.display = 'none'; // Hide status on success
+                statusDiv.style.display = 'none';
+                updateStatus("Connected - Streaming video");
             } else {
-                console.warn("Received a track without a video stream.");
+                console.warn("Received track without video stream");
             }
         };
 
-        // 3. WebRTC signaling logic
-        async function startWebRtcSignaling() {
-            console.log("Receiver starting WebRTC signaling...");
+        pc.onicecandidate = event => {
+            if (event.candidate) {
+                console.log("Sending ICE candidate to Android app");
+                sendToAndroid('ice-candidate', {
+                    candidate: event.candidate.toJSON()
+                });
+            }
+        };
 
-            const callId = "room1";
-            const dbRoot = db.ref("webrtc").child(callId);
-
-            const offerRef = dbRoot.child("offer");
-            const answerRef = dbRoot.child("answer");
-            const senderCandidatesRef = dbRoot.child("offerCandidates");
-            const receiverCandidatesRef = dbRoot.child("answerCandidates");
-
-            await dbRoot.remove();
-            console.log("Cleared previous session data.");
-
-            senderCandidatesRef.on("child_added", snapshot => {
-                const candidate = snapshot.val();
-                if (candidate) {
-                    console.log("Got ICE candidate from sender", candidate);
-                    pc.addIceCandidate(new RTCIceCandidate(candidate));
-                }
-            });
-
-            offerRef.on("value", async snapshot => {
-                const offer = snapshot.val();
-                if (offer) {
-                    console.log("Received offer", offer);
-                    await pc.setRemoteDescription(new RTCSessionDescription(offer));
-
-                    const answer = await pc.createAnswer();
-                    await pc.setLocalDescription(answer);
-
-                    answerRef.set(pc.localDescription.toJSON());
-                }
-            });
-
-            pc.onicecandidate = event => {
-                if (event.candidate) {
-                    receiverCandidatesRef.push(event.candidate.toJSON());
-                }
-            };
+        pc.oniceconnectionstatechange = () => {
+            const state = pc.iceConnectionState;
+            console.log("ICE connection state:", state);
             
-            // Listen for ICE connection state changes to update the status message
-            pc.oniceconnectionstatechange = () => {
-                const state = pc.iceConnectionState;
-                console.log("ICE connection state changed:", state);
-                if (state === "disconnected" || state === "failed") {
-                    statusDiv.innerText = "Connection failed. Please try again.";
-                    statusDiv.style.display = 'flex'; // Show status on failure
-                    console.error("WebRTC connection failed.");
-                } else if (state === "connected") {
-                    statusDiv.innerText = "Connected!";
-                    // The ontrack event handler will hide the div once the stream starts
-                }
-            };
+            switch(state) {
+                case 'connecting':
+                    updateStatus("Establishing connection...");
+                    break;
+                case 'connected':
+                    updateStatus("Connected!");
+                    break;
+                case 'disconnected':
+                    updateStatus("Connection lost. Reconnecting...");
+                    statusDiv.style.display = 'flex';
+                    break;
+                case 'failed':
+                    updateStatus("Connection failed. Please restart the app.");
+                    statusDiv.style.display = 'flex';
+                    break;
+                case 'closed':
+                    updateStatus("Connection closed.");
+                    statusDiv.style.display = 'flex';
+                    break;
+            }
+        };
+
+        // Helper function to send messages to Android app
+        function sendToAndroid(type, data) {
+            const message = { type, data };
+            try {
+                castContext.sendCustomMessage('urn:x-cast:webrtc.signaling', undefined, message);
+            } catch (error) {
+                console.error('Failed to send message to Android:', error);
+            }
         }
 
-        // 4. Cast Application Framework (CAF) setup
-        const castContext = cast.framework.CastReceiverContext.getInstance();
+        // Helper function to update status
+        function updateStatus(message) {
+            statusDiv.innerText = message;
+            console.log("Status:", message);
+        }
+
+        // WebRTC signaling message handler
+        async function handleWebRTCSignaling(event) {
+            const { type, data } = event.data;
+            console.log("Received WebRTC message:", type);
+
+            try {
+                switch(type) {
+                    case 'offer':
+                        await handleOffer(data);
+                        break;
+                    case 'ice-candidate':
+                        await handleIceCandidate(data);
+                        break;
+                    case 'connection-test':
+                        // Respond to connection test from Android
+                        sendToAndroid('connection-test-response', { status: 'ready' });
+                        break;
+                    default:
+                        console.warn('Unknown message type:', type);
+                }
+            } catch (error) {
+                console.error('Error handling WebRTC message:', error);
+                updateStatus("Error processing connection data");
+            }
+        }
+
+        async function handleOffer(offerData) {
+            console.log("Processing offer from Android app");
+            updateStatus("Processing connection offer...");
+
+            try {
+                const offer = new RTCSessionDescription(offerData.offer);
+                await pc.setRemoteDescription(offer);
+
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+
+                // Send answer back to Android
+                sendToAndroid('answer', {
+                    answer: pc.localDescription.toJSON()
+                });
+
+                console.log("Answer sent to Android app");
+            } catch (error) {
+                console.error("Error creating answer:", error);
+                updateStatus("Failed to establish connection");
+            }
+        }
+
+        async function handleIceCandidate(candidateData) {
+            try {
+                const candidate = new RTCIceCandidate(candidateData.candidate);
+                await pc.addIceCandidate(candidate);
+                console.log("Added ICE candidate from Android app");
+            } catch (error) {
+                console.error("Error adding ICE candidate:", error);
+            }
+        }
+
+        // Cast Application Framework setup
+        castContext.addEventListener(cast.framework.system.EventType.READY, () => {
+            console.log("Cast receiver is ready for WebRTC connections");
+            updateStatus("Ready for connection from Android app");
+        });
+
+        // Listen for custom messages from Android app
+        castContext.addCustomMessageListener('urn:x-cast:webrtc.signaling', handleWebRTCSignaling);
+
+        // Handle sender connect/disconnect
+        castContext.addEventListener(cast.framework.system.EventType.SENDER_CONNECTED, (event) => {
+            console.log("Android app connected:", event.senderId);
+            updateStatus("Android app connected. Initializing...");
+        });
+
+        castContext.addEventListener(cast.framework.system.EventType.SENDER_DISCONNECTED, (event) => {
+            console.log("Android app disconnected:", event.senderId);
+            updateStatus("Android app disconnected");
+            // Clean up WebRTC connection
+            if (pc.connectionState !== 'closed') {
+                pc.close();
+            }
+            remoteVideo.srcObject = null;
+            statusDiv.style.display = 'flex';
+        });
+
+        // Start the Cast receiver
         castContext.start();
 
-        castContext.addEventListener(cast.framework.system.EventType.READY, () => {
-            console.log("Cast receiver is ready.");
-            startWebRtcSignaling();
+        // Optional: Handle page visibility for cleanup
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden && pc.connectionState !== 'closed') {
+                console.log("Page hidden, maintaining connection");
+            }
         });
     </script>
 </body>
 </html>
-
